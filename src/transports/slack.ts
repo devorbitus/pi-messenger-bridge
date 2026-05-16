@@ -29,7 +29,7 @@ export class SlackProvider implements ITransportProvider {
   private channelCache: Map<string, { isDM: boolean; name?: string }> = new Map();
 
   constructor(
-    private config: { botToken: string; appToken: string; brainReaction?: boolean },
+    private config: { botToken: string; appToken: string; brainReaction?: boolean; debug?: boolean },
     private auth: ChallengeAuth
   ) {}
 
@@ -250,6 +250,9 @@ export class SlackProvider implements ITransportProvider {
 
     try {
       if (processing) {
+        if (this.config.debug) {
+          console.log(`[Slack] Adding brain reaction to message ${messageId} in ${chatId}`);
+        }
         await this.app.client.reactions.add({
           channel: chatId,
           timestamp: messageId,
@@ -258,6 +261,9 @@ export class SlackProvider implements ITransportProvider {
         this.activeBrainReactions.add(key);
       } else {
         if (!this.activeBrainReactions.has(key)) return;
+        if (this.config.debug) {
+          console.log(`[Slack] Removing brain reaction from message ${messageId} in ${chatId}`);
+        }
         await this.app.client.reactions.remove({
           channel: chatId,
           timestamp: messageId,
