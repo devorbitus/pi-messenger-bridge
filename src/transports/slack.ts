@@ -5,6 +5,20 @@ import type { ITransportProvider } from "./interface.js";
 // Dynamic import for ESM modules
 type App = any;
 
+type SlackImageAttachment = {
+  data: string;
+  mimeType: string;
+  name?: string;
+};
+
+const MAX_SLACK_IMAGE_BYTES = 20 * 1024 * 1024;
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
 async function loadSlackBolt() {
   const slack = await import("@slack/bolt");
   return slack;
@@ -66,19 +80,28 @@ export class SlackProvider implements ITransportProvider {
 
     // Listen for all messages
     this.app.message(async ({ message, client }: any) => {
-      // Skip bot messages, message edits, deletes, etc.
-      if (message.subtype) {
+      // Skip bot messages, message edits, deletes, etc. Slack file uploads arrive as
+      // `file_share` subtype messages, so keep those and process their image files.
+      if (message.subtype && message.subtype !== "file_share") {
         return;
       }
 
-      // TypeScript type guard for regular messages
-      if (!("user" in message) || !("text" in message) || !message.text) {
+      const files = Array.isArray(message.files) ? message.files : [];
+      const hasImageFiles = files.some((file: any) => this.isSupportedSlackImage(file));
+
+      // TypeScript type guard for regular or image-bearing messages.
+      if (!("user" in message) || !("channel" in message) || !("ts" in message)) {
+        return;
+      }
+
+      const rawText = typeof message.text === "string" ? message.text : "";
+      if (!rawText.trim() && !hasImageFiles) {
         return;
       }
 
       const userId = message.user;
       const channelId = message.channel;
-      const text = message.text;
+      const text = rawText;
       const ts = message.ts;
 
       // Filter out duplicate messages
@@ -169,12 +192,16 @@ export class SlackProvider implements ITransportProvider {
         await this.setMessageProcessing(channelId, ts, true);
       }
 
+      const images = hasImageFiles ? await this.downloadSlackImages(files) : [];
+      const content = this.formatMessageContent(text, files, images);
+
       // Forward to message handler
       if (this.messageHandler) {
         const externalMessage: ExternalMessage = {
           chatId: channelId,
           transport: this.type,
-          content: text.trim(),
+          content,
+          images,
           username: username,
           userId: userId,
           timestamp: new Date(parseFloat(ts) * 1000),
@@ -217,6 +244,78 @@ export class SlackProvider implements ITransportProvider {
     this.channelCache.clear();
     this.activeBrainReactions.clear();
     console.log("[Slack] Disconnected");
+  }
+
+  private isSupportedSlackImage(file: any): boolean {
+    const mimeType = typeof file?.mimetype === "string" ? file.mimetype.toLowerCase() : "";
+    return SUPPORTED_IMAGE_MIME_TYPES.has(mimeType);
+  }
+
+  private async downloadSlackImages(files: any[]): Promise<SlackImageAttachment[]> {
+    const images: SlackImageAttachment[] = [];
+
+    for (const file of files) {
+      if (!this.isSupportedSlackImage(file)) continue;
+
+      const downloadUrl = file.url_private_download || file.url_private;
+      const mimeType = String(file.mimetype).toLowerCase();
+      if (!downloadUrl) continue;
+
+      try {
+        const response = await fetch(downloadUrl, {
+          headers: { Authorization: `Bearer ${this.config.botToken}` },
+        });
+
+        if (!response.ok) {
+          console.warn(`[Slack] Failed to download image ${file.id || file.name}: HTTP ${response.status}`);
+          continue;
+        }
+
+        const contentLength = Number(response.headers.get("content-length") || "0");
+        if (contentLength > MAX_SLACK_IMAGE_BYTES) {
+          console.warn(`[Slack] Skipping image ${file.id || file.name}: file is too large`);
+          continue;
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        if (arrayBuffer.byteLength > MAX_SLACK_IMAGE_BYTES) {
+          console.warn(`[Slack] Skipping image ${file.id || file.name}: file is too large`);
+          continue;
+        }
+
+        images.push({
+          data: Buffer.from(arrayBuffer).toString("base64"),
+          mimeType,
+          name: file.name || file.title,
+        });
+      } catch (error) {
+        console.warn(`[Slack] Failed to download image ${file.id || file.name}: ${(error as Error).message}`);
+      }
+    }
+
+    return images;
+  }
+
+  private formatMessageContent(text: string, files: any[], images: SlackImageAttachment[]): string {
+    const trimmed = text.trim();
+    const supportedImageCount = files.filter((file: any) => this.isSupportedSlackImage(file)).length;
+
+    if (images.length === 0 && supportedImageCount > 0) {
+      const plural = supportedImageCount === 1 ? "image was" : "images were";
+      return trimmed
+        ? `${trimmed}\n\n[${supportedImageCount} Slack ${plural} attached but could not be downloaded for model processing.]`
+        : `[${supportedImageCount} Slack ${plural} attached but could not be downloaded for model processing.]`;
+    }
+
+    if (images.length > 0) {
+      const imageNames = images.map((image) => image.name).filter(Boolean).join(", ");
+      const attachmentNote = imageNames
+        ? `[Attached Slack image${images.length === 1 ? "" : "s"}: ${imageNames}]`
+        : `[Attached ${images.length} Slack image${images.length === 1 ? "" : "s"}.]`;
+      return trimmed ? `${trimmed}\n\n${attachmentNote}` : `Please process the attached Slack image${images.length === 1 ? "" : "s"}.\n\n${attachmentNote}`;
+    }
+
+    return trimmed;
   }
 
   async sendMessage(chatId: string, text: string): Promise<void> {

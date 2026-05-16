@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "fs";
 import * as os from "os";
@@ -185,7 +185,19 @@ export default function (pi: ExtensionAPI): void {
       };
 
       const taggedMessage = `[📱 @${msg.username} via ${msg.transport}]: ${msg.content}`;
-      pi.sendUserMessage(taggedMessage, { deliverAs: "followUp" });
+      if (msg.images?.length) {
+        const content: (TextContent | ImageContent)[] = [
+          { type: "text", text: taggedMessage },
+          ...msg.images.map((image) => ({
+            type: "image" as const,
+            data: image.data,
+            mimeType: image.mimeType,
+          })),
+        ];
+        pi.sendUserMessage(content, { deliverAs: "followUp" });
+      } else {
+        pi.sendUserMessage(taggedMessage, { deliverAs: "followUp" });
+      }
     });
 
     transportManager.onError((err, transport) => {

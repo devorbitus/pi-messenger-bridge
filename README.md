@@ -76,6 +76,7 @@ Slack app setup:
    - `users:read` — resolve Slack user names
    - `channels:read`, `groups:read`, `im:read`, `mpim:read` — inspect conversations and detect DMs vs channels
    - `channels:history`, `groups:history`, `im:history`, `mpim:history` — receive messages from public channels, private channels, DMs, and multi-person DMs
+   - `files:read` — download image files attached to Slack messages so they can be sent to the model
    - `reactions:write` — optional; only required if `slack.brainReaction` is enabled
 4. **Event Subscriptions → Subscribe to bot events**: add the message events you want the bridge to receive:
    - `message.im` — direct messages
@@ -84,6 +85,8 @@ Slack app setup:
    - `message.groups` — private channels where the bot is a member
 5. Install/reinstall the app to your workspace after changing scopes or events.
 6. Invite the bot to any channel where it should respond.
+
+Slack image handling supports PNG, JPEG, GIF, and WebP files up to 20 MB. Images are downloaded with the bot token and forwarded to pi as image inputs alongside the Slack message text.
 
 Configure the bridge:
 
